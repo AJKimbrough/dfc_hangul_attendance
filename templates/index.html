@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="section grid grid-2">
+  <div class="card">
+    <h2 class="hangul">오늘의 출석 · Today: {{ today_session.class_date.strftime('%A, %b %d, %Y') }}</h2>
+    <p class="helper">Scan the QR to check in • QR 코드를 스캔해 주세요</p>
+    <img class="qr" src="{{ url_for('qr_today') }}" alt="Today's check-in QR"/>
+    <p class="helper">
+        Current QR target:
+        <a href="{{ qr_target }}" target="_blank" rel="noopener">{{ qr_target }}</a>
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>Create Another Session (Admin)</h3>
+    <p class="helper">Add any date you plan to meet so attendance stays accurate.</p>
+    <form method="post" action="{{ url_for('create_session') }}">
+      <label>Class date</label>
+      <input type="date" name="class_date" required />
+      <label>Admin code</label>
+      <input type="password" name="code" placeholder="••••••" required />
+      <div style="margin-top:10px;"><button type="submit">Create session</button></div>
+    </form>
+  </div>
+</section>
+{% endblock %}

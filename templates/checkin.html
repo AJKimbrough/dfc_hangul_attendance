@@ -1,0 +1,19 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card" style="max-width:560px; margin: 0 auto;">
+  <h2 class="hangul">출석 체크 · Check‑in</h2>
+  <div class="chips">
+    <span class="chip">한극어 클럽</span>
+
+  </div>
+  <div class="divider">🌸 🌸 🌸</div>
+  <form method="post" action="{{ url_for('submit_checkin') }}">
+    <input type="hidden" name="session_id" value="{{ class_session.id }}" />
+    <label>이름 · Your name</label>
+    <input name="name" placeholder="Enter Name" required />
+    <label>이메일 · Email (first time only)</label>
+    <input type="email" name="email" placeholder="netid@utdallas.com" />
+    <div style="margin-top:12px;"><button type="submit">Check in</button></div>
+  </form>
+</div>
+{% endblock %}

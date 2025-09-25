@@ -1,0 +1,69 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card">
+  <h2>출석 현황 · Attendance Dashboard</h2>
+  <p class="helper">Export a CSV of current stats or scan the badges to spot who needs help.</p>
+
+  <!-- Export CSV -->
+  <form method="get" action="{{ url_for('export_csv') }}" style="margin:12px 0;">
+    <button type="submit">⬇️ Export CSV</button>
+  </form>
+
+  <!-- Attendance table -->
+  <div class="table-wrap">
+    <table>
+     
+<thead>
+  <tr>
+    <th>Name</th>
+    <th>Email</th>
+    <th style="width:220px;">Attendance</th>
+    <th>Status</th>
+    {% if session.get('is_admin') %}
+      <th>Actions</th>
+    {% endif %}
+  </tr>
+</thead>
+<tbody>
+  {% for r in rows %}
+    {% set pct = r.present %}
+    {% set badge = '🎉' if pct>=90 else ('💪' if pct>=75 else ('⚠️' if pct>=50 else '❗')) %}
+    {% set status_class = 'ok' if pct>=75 else ('warn' if pct>=50 else 'danger') %}
+    {% set tip = 'Excellent attendance' if pct>=90 else ('Solid progress' if pct>=75 else ('At risk — step up' if pct>=50 else 'Inactive danger zone')) %}
+    <tr>
+      <td>{{ r.name }}</td>
+      <td>{{ r.email }}</td>
+      <td>
+        <div class="progress"><span style="width: {{ pct }}%"></span></div>
+        <div class="helper" style="margin-top:6px;">{{ pct }}%</div>
+      </td>
+      <td><span class="badge {{ status_class }}" title="{{ tip }}">{{ badge }} {{ r.status }}</span></td>
+
+      {% if session.get('is_admin') %}
+      <td style="white-space:nowrap;">
+        <a href="{{ url_for('edit_student', student_id=r.id) }}"
+           title="Edit" style="text-decoration:none; margin-right:8px;">✏️</a>
+
+        <form method="post"
+              action="{{ url_for('delete_student', student_id=r.id) }}"
+              style="display:inline"
+              onsubmit="return confirm('Delete {{ r.name }}? This also removes their attendance.');">
+          <button type="submit" title="Delete" style="border:none; background:none; cursor:pointer;">✖️</button>
+        </form>
+      </td>
+      {% endif %}
+    </tr>
+  {% endfor %}
+</tbody>
+    </table>
+  </div>
+
+  <!-- Clear Attendance Button -->
+<form method="post" action="{{ url_for('clear_students') }}" style="margin-top:16px;">
+    <input type="password" name="code" placeholder="Admin code" required />
+    <button type="submit" style="background:#ef4444; color:#fff; font-weight:800;">
+        🗑 Delete All Students
+    </button>
+ </form>
+</div>
+{% endblock %}

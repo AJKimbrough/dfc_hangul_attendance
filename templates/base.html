@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ko">
+ <head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="{{ url_for('favicon') }}">
+
+  <title>{{ title or 'DFC Hangul — Attendance' }}</title>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet">
+
+  <!-- IMPORTANT: versioned to avoid stale caching -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=4) }}" />
+</head>
+  <body>
+    <header class="header">
+      <h1>DFC Hangul ✨ <span class="hangul">한국어 & 문화</span></h1>
+      <nav>
+        <a href="{{ url_for('index') }}">홈 Home</a>
+        <a href="{{ url_for('dashboard') }}">출석 Dashboard</a>
+        <a href="{{ url_for('dashboard_by_date') }}">Dates</a>
+        <span class="theme-toggle">
+          <button id="themeBtn" class="theme-btn" type="button" title="Toggle Light/Dark">🌞 / 🌙</button>
+        </span>
+        {% if session.get('is_admin') %}
+            <a href="{{ url_for('admin_logout') }}">Admin: Logout</a>
+        {% else %}
+            <a href="{{ url_for('admin_login') }}">Admin Login</a>
+        {% endif %}
+      </nav>
+      <div class="flag-corner" aria-hidden="true">🇰🇷</div>
+    </header>
+
+    <main class="container">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <ul class="flash">
+            {% for category, message in messages %}
+              <li class="{{ category }}">{{ message }}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        © {{ current_year }} DFC Hangul — Korean Language & Culture at UTD 🇰🇷
+    </footer>
+
+
+    <script>
+      // Theme toggle
+      (function(){
+        const btn = document.getElementById('themeBtn');
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+          const root = document.documentElement;
+          const isDark = root.getAttribute('data-theme') === 'dark';
+          if (isDark) { root.removeAttribute('data-theme'); localStorage.setItem('theme',''); }
+          else { root.setAttribute('data-theme','dark'); localStorage.setItem('theme','dark'); }
+        });
+      })();
+
+      // Lightweight confetti burst
+      function launchConfetti(count=80){
+        const colors = ['#ff6b9e','#7dd3fc','#a78bfa','#ffd43b','#10b981'];
+        for(let i=0;i<count;i++){
+          const piece = document.createElement('div');
+          piece.className = 'confetti-piece';
+          const size = Math.random()*8 + 6;
+          piece.style.width = size + 'px';
+          piece.style.height = (size*1.4) + 'px';
+          piece.style.left = (Math.random()*100) + 'vw';
+          piece.style.animationDuration = (1.6 + Math.random()*1.2) + 's';
+          piece.style.background = colors[Math.floor(Math.random()*colors.length)];
+          piece.style.transform = `rotate(${Math.random()*360}deg)`;
+          document.body.appendChild(piece);
+          setTimeout(()=> piece.remove(), 3000);
+        }
+      }
+
+      // If we have a success flash (e.g., after check-in), celebrate!
+      document.addEventListener('DOMContentLoaded', () => {
+        const ok = document.querySelector('.flash .success');
+        if (ok) launchConfetti(120);
+      });
+    </script>
+  </body>
+</html>

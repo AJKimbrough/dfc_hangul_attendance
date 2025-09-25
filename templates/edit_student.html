@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card" style="max-width:520px; margin:0 auto; text-align:left;">
+  <h2>✏️ Edit Student</h2>
+  <form method="post">
+    <label>Name</label>
+    <input name="name" value="{{ student.name }}" required />
+    <label>Email</label>
+    <input name="email" type="email" value="{{ student.email or '' }}" />
+    <button type="submit" style="margin-top:12px;">Save</button>
+  </form>
+  <p class="helper" style="margin-top:10px;">
+    Tip: Leave email blank to clear it.
+  </p>
+</div>
+{% endblock %}

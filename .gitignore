@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Local DB
+instance/
+attendance.db
+
+# dotenv
+.env
