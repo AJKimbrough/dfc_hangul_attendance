@@ -7,11 +7,31 @@ from sqlalchemy import func, UniqueConstraint
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime, date
 from apscheduler.schedulers.background import BackgroundScheduler
+
+import re
+from sqlalchemy.engine.url import make_url
 import io, os, qrcode, smtplib
 from email.message import EmailMessage
 from dotenv import load_dotenv
 
 load_dotenv()
+
+def normalize_database_url(url: str) -> str:
+    if not url:
+        return 'sqlite:///attendance.db'
+    # Render/Heroku sometimes give postgres://; SQLAlchemy prefers postgresql+psycopg2://
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif url.startswith("postgresql://") and "+psycopg2" not in url:
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    # Optionally enforce SSL if not present (safe for most hosted DBs)
+    if "sslmode=" not in url and url.startswith("postgresql+psycopg2://"):
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}sslmode=require"
+    return url
+
+raw_db_url = os.getenv('DATABASE_URL', 'sqlite:///attendance.db')
+db_url = normalize_database_url(raw_db_url)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY','dev')
