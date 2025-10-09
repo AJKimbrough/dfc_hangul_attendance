@@ -1,5 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, send_file, make_response, session
-from flask import Response
+from flask import Flask, render_template, request, redirect, url_for, flash, send_file, make_response, session, Response
 import csv
 from urllib.parse import urljoin
 from flask_sqlalchemy import SQLAlchemy
@@ -9,13 +8,15 @@ from datetime import datetime, date
 from apscheduler.schedulers.background import BackgroundScheduler
 
 import re
-from sqlalchemy.engine.url import make_url
+from sqlalchemy.engine.url import make_url  # (kept if you reference later)
 import io, os, qrcode, smtplib
 from email.message import EmailMessage
 from dotenv import load_dotenv
+from werkzeug.exceptions import HTTPException
 
 load_dotenv()
 
+# --- DB URL normalizer --------------------------------------------------------
 def normalize_database_url(url: str) -> str:
     if not url:
         return 'sqlite:///attendance.db'
@@ -24,7 +25,7 @@ def normalize_database_url(url: str) -> str:
         url = url.replace("postgres://", "postgresql+psycopg2://", 1)
     elif url.startswith("postgresql://") and "+psycopg2" not in url:
         url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
-    # Optionally enforce SSL if not present (safe for most hosted DBs)
+    # Enforce SSL for hosted Postgres unless already present
     if "sslmode=" not in url and url.startswith("postgresql+psycopg2://"):
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}sslmode=require"
@@ -33,20 +34,26 @@ def normalize_database_url(url: str) -> str:
 raw_db_url = os.getenv('DATABASE_URL', 'sqlite:///attendance.db')
 db_url = normalize_database_url(raw_db_url)
 
-app = Flask(__name__)
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY','dev')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL','sqlite:///attendance.db')
+# --- Flask app ----------------------------------------------------------------
+app = Flask(__name__, template_folder="templates", static_folder="static")
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev')
+# ✅ Use normalized DB URL (and will pick up sqlite:////data/attendance.db if set)
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-from werkzeug.exceptions import HTTPException
-
+# --- Error handling (single handler) ------------------------------------------
 @app.errorhandler(Exception)
 def on_error(e):
     if isinstance(e, HTTPException):
-        return e  # return real 404/403, etc.
+        return e  # real 404/403/etc.
     import traceback
     traceback.print_exc()
     return ("Something went wrong. Check the server logs for details.", 500)
+
+# --- Health & misc ------------------------------------------------------------
+@app.route("/health")
+def health():
+    return "ok", 200
 
 @app.route('/favicon.ico')
 def favicon():
@@ -55,22 +62,13 @@ def favicon():
         return send_file(path, mimetype='image/x-icon')
     return ("", 204)
 
-
 @app.context_processor
 def inject_current_year():
-    from datetime import datetime
     return {"current_year": datetime.utcnow().year}
-
-# 2) dev error handler to print error terminal
-@app.errorhandler(Exception)
-def on_error(e):
-    import traceback
-    traceback.print_exc()
-    return ("Something went wrong. Check the server logs for details.", 500)
-
 
 @app.after_request
 def skip_ngrok_warning(response):
+    # Helps suppress ngrok browser banner if you ever tunnel
     response.headers['ngrok-skip-browser-warning'] = 'true'
     return response
 
@@ -83,8 +81,7 @@ def png_response(buf: io.BytesIO):
     resp.headers['Expires'] = '0'
     return resp
 
-
-# Initialize DB
+# --- DB models ----------------------------------------------------------------
 db = SQLAlchemy(app)
 
 class Student(db.Model):
@@ -109,12 +106,11 @@ class Attendance(db.Model):
     student = db.relationship('Student', backref='attendances')
     session = db.relationship('Session', backref='attendances')
 
+# --- URL helpers --------------------------------------------------------------
 def public_url_for(endpoint: str, **values) -> str:
     """
     Build a URL for QR codes using PUBLIC_BASE_URL if provided.
-    Examples:
-      PUBLIC_BASE_URL = https://abc123.ngrok.io
-      public_url_for('checkin', session_id=5) -> https://abc123.ngrok.io/checkin?session_id=5
+    Example: PUBLIC_BASE_URL=https://your-host.onrender.com
     """
     base = os.getenv('PUBLIC_BASE_URL')
     rel = url_for(endpoint, _external=False, **values)
@@ -122,7 +118,7 @@ def public_url_for(endpoint: str, **values) -> str:
         return urljoin(base.rstrip('/') + '/', rel.lstrip('/'))
     return url_for(endpoint, _external=True, **values)
 
-# Utility: ensure today's session exists
+# --- Attendance logic ----------------------------------------------------------
 def get_or_create_today_session():
     today = date.today()
     sess = Session.query.filter_by(class_date=today).first()
@@ -132,10 +128,9 @@ def get_or_create_today_session():
         db.session.commit()
     return sess
 
-# Email logic
 def send_email(to_email: str, subject: str, body: str):
     host = os.getenv('SMTP_HOST')
-    port = int(os.getenv('SMTP_PORT','587'))
+    port = int(os.getenv('SMTP_PORT', '587'))
     user = os.getenv('SMTP_USERNAME')
     pwd = os.getenv('SMTP_PASSWORD')
     from_email = os.getenv('FROM_EMAIL', user)
@@ -153,40 +148,37 @@ def send_email(to_email: str, subject: str, body: str):
         s.send_message(msg)
     return True
 
-# Attendance logic
 def attendance_ratio(student_id: int):
     total_sessions = db.session.query(func.count(Session.id)).scalar() or 0
     if total_sessions == 0:
-        return 1.0  
+        return 1.0
     present_count = (
         db.session.query(func.count(Attendance.id))
-        .filter(Attendance.student_id==student_id, Attendance.present==True)
+        .filter(Attendance.student_id == student_id, Attendance.present.is_(True))
         .scalar() or 0
     )
     return present_count / total_sessions
 
-# Notify if close to inactive
 def check_and_notify_student(student: Student):
     ratio = attendance_ratio(student.id)
     is_inactive = ratio < DANGER_THRESHOLD
     if is_inactive and student.active:
-        # transition from active -> inactive
         student.active = False
         db.session.commit()
         if student.email:
             send_email(
                 student.email,
                 "Attendance Alert: You are below 50%",
-                f"Hi {student.name},\n\nOur records show your attendance is {ratio:.0%}, which is below the required 50%. Please reach out to your instructor to get back on track.\n\nThanks."
+                f"Hi {student.name},\n\nOur records show your attendance is {ratio:.0%}, "
+                "which is below the required 50%. Please reach out to your instructor.\n\nThanks."
             )
             student.last_notified_at = datetime.utcnow()
             db.session.commit()
     elif (not is_inactive) and (not student.active):
-        # transition from inactive -> active
         student.active = True
         db.session.commit()
 
-# Routes
+# --- Routes -------------------------------------------------------------------
 @app.route('/')
 def index():
     today_session = get_or_create_today_session()
@@ -198,7 +190,7 @@ def qr_today():
     """Render a QR that points to the check-in page for today's session."""
     sess = get_or_create_today_session()
     url = public_url_for('checkin', session_id=sess.id)
-    print(f"[QR] Generating QR for URL: {url}")  
+    print(f"[QR] Generating QR for URL: {url}")
     img = qrcode.make(url)
     buf = io.BytesIO()
     img.save(buf, format='PNG')
@@ -221,8 +213,7 @@ def qr_for_url():
 def checkin():
     session_id = request.args.get('session_id', type=int)
     if not session_id:
-        sess = get_or_create_today_session()
-        session_id = sess.id
+        session_id = get_or_create_today_session().id
     sess = Session.query.get_or_404(session_id)
     return render_template('checkin.html', class_session=sess)
 
@@ -235,7 +226,7 @@ def submit_checkin():
         flash('Please enter your name.', 'error')
         return redirect(url_for('checkin', session_id=session_id))
 
-    student = Student.query.filter(func.lower(Student.name)==name.lower()).first()
+    student = Student.query.filter(func.lower(Student.name) == name.lower()).first()
     if not student:
         student = Student(name=name, email=(email or None))
         db.session.add(student)
@@ -245,20 +236,17 @@ def submit_checkin():
             student.email = email
             db.session.commit()
 
-    # Mark attendance
+    # Mark attendance (idempotent per (student, session))
     existing = Attendance.query.filter_by(student_id=student.id, session_id=session_id).first()
     if not existing:
-        att = Attendance(student_id=student.id, session_id=session_id, present=True)
-        db.session.add(att)
+        db.session.add(Attendance(student_id=student.id, session_id=session_id, present=True))
         db.session.commit()
 
-    # Recompute status, notify
     check_and_notify_student(student)
 
     flash('Checked in! Have a great class.', 'success')
     return redirect(url_for('checkin', session_id=session_id))
 
-# Admin / dashboard
 @app.route('/dashboard')
 def dashboard():
     students = Student.query.order_by(Student.name).all()
@@ -267,10 +255,10 @@ def dashboard():
     for s in students:
         ratio = attendance_ratio(s.id) if total_sessions else 1.0
         rows.append({
-            'id': s.id,                     
+            'id': s.id,
             'name': s.name,
             'email': s.email or '—',
-            'present': int(round(ratio*100)),
+            'present': int(round(ratio * 100)),
             'status': 'Active' if s.active else 'Inactive'
         })
     return render_template('dashboard.html', rows=rows, total_sessions=total_sessions)
@@ -284,7 +272,7 @@ def dashboard_by_date():
         rows = (
             db.session.query(Student.name, Student.email)
             .join(Attendance, Attendance.student_id == Student.id)
-            .filter(Attendance.session_id == s.id, Attendance.present == True)
+            .filter(Attendance.session_id == s.id, Attendance.present.is_(True))
             .order_by(Student.name)
             .all()
         )
@@ -303,37 +291,36 @@ def export_csv():
 
     if session_id:
         sess = Session.query.get_or_404(session_id)
-        writer.writerow(['session_date','name','email'])
+        writer.writerow(['session_date', 'name', 'email'])
         for name, email in (
             db.session.query(Student.name, Student.email)
             .join(Attendance, Attendance.student_id == Student.id)
-            .filter(Attendance.session_id == session_id, Attendance.present == True)
+            .filter(Attendance.session_id == session_id, Attendance.present.is_(True))
             .order_by(Student.name)
         ):
             writer.writerow([sess.class_date.isoformat(), name, email or ''])
     else:
         students = Student.query.order_by(Student.name).all()
         total_sessions = db.session.query(func.count(Session.id)).scalar() or 0
-        writer.writerow(['name','email','attendance_percent','status','present_days','total_sessions'])
+        writer.writerow(['name', 'email', 'attendance_percent', 'status', 'present_days', 'total_sessions'])
         for s in students:
             present_count = (
                 db.session.query(func.count(Attendance.id))
-                .filter(Attendance.student_id==s.id, Attendance.present==True)
+                .filter(Attendance.student_id == s.id, Attendance.present.is_(True))
                 .scalar() or 0
             )
-            pct = int(round((present_count/(total_sessions or 1))*100))
-            status = 'Active' if pct>=50 else 'Inactive'
+            pct = int(round((present_count / (total_sessions or 1)) * 100))
+            status = 'Active' if pct >= 50 else 'Inactive'
             writer.writerow([s.name, s.email or '', pct, status, present_count, total_sessions])
 
     resp = Response(output.getvalue(), mimetype='text/csv')
     resp.headers['Content-Disposition'] = 'attachment; filename="attendance_export.csv"'
     return resp
 
-# Admin: create a session
 @app.route('/admin/create_session', methods=['POST'])
 def create_session():
     code = request.form.get('code')
-    if code != os.getenv('ADMIN_CODE','letmein'):
+    if code != os.getenv('ADMIN_CODE', 'letmein'):
         return "Forbidden", 403
     date_str = request.form.get('class_date')
     when = datetime.strptime(date_str, '%Y-%m-%d').date()
@@ -347,9 +334,8 @@ def clear_students():
     code = request.form.get('code', '')
     if code != os.getenv('ADMIN_CODE', 'letmein'):
         return "Forbidden", 403
-
-    Attendance.query.delete()   
-    Student.query.delete()      
+    Attendance.query.delete()
+    Student.query.delete()
     db.session.commit()
     flash("All students and their attendance have been deleted.", "success")
     return redirect(url_for('dashboard'))
@@ -371,49 +357,7 @@ def admin_logout():
     flash('Admin mode disabled.', 'success')
     return redirect(url_for('dashboard'))
 
-@app.route('/health')
-def health():
-    return "ok", 200
-
-# ---- Admin Student Management ----
-def require_admin():
-    return bool(session.get('is_admin'))
-
-@app.route('/admin/student/<int:student_id>/delete', methods=['POST'])
-def delete_student(student_id):
-    if not require_admin():
-        return "Forbidden", 403
-    s = Student.query.get_or_404(student_id)
-    Attendance.query.filter_by(student_id=s.id).delete(synchronize_session=False)
-    db.session.delete(s)
-    db.session.commit()
-    flash(f"Deleted {s.name}.", "success")
-    return redirect(url_for('dashboard'))
-
-@app.route('/admin/student/<int:student_id>/edit', methods=['GET', 'POST'])
-def edit_student(student_id):
-    if not require_admin():
-        return "Forbidden", 403
-    s = Student.query.get_or_404(student_id)
-    if request.method == 'POST':
-        new_name = (request.form.get('name') or '').strip()
-        new_email = (request.form.get('email') or '').strip() or None
-        if not new_name:
-            flash('Name is required.', 'error')
-            return redirect(url_for('edit_student', student_id=student_id))
-        s.name = new_name
-        s.email = new_email
-        try:
-            db.session.commit()
-            flash('Student updated.', 'success')
-            return redirect(url_for('dashboard'))
-        except IntegrityError:
-            db.session.rollback()
-            flash('Name or email already exists. Choose a different one.', 'error')
-            return redirect(url_for('edit_student', student_id=student_id))
-    return render_template('edit_student.html', student=s)
-
-
+# Debug helper
 @app.route('/_debug_base')
 def debug_base():
     return {
@@ -421,8 +365,9 @@ def debug_base():
         "qr_example": public_url_for("checkin", session_id=get_or_create_today_session().id)
     }, 200
 
-# Background:check statuses daily, 5 AM
+# --- Scheduler: run once where enabled ---------------------------------------
 scheduler = BackgroundScheduler(daemon=True)
+
 @scheduler.scheduled_job('cron', hour=5)
 def daily_recompute():
     with app.app_context():
@@ -432,9 +377,11 @@ def daily_recompute():
             if prev and not s.active:
                 print(f"[INFO] {s.name} dropped below 50% and was notified.")
 
-scheduler.start()
+# Start scheduler only when explicitly turned on
+if os.getenv("RUN_SCHEDULER", "false").lower() == "true":
+    scheduler.start()
 
-# CLI: initialize DB
+# --- CLI / local entry --------------------------------------------------------
 @app.cli.command('init-db')
 def init_db_cmd():
     db.create_all()
@@ -445,5 +392,3 @@ if __name__ == '__main__':
         db.create_all()
     port = int(os.getenv('PORT', 5000))
     app.run(debug=True, host='0.0.0.0', port=port)
-
-

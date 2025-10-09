@@ -4,10 +4,18 @@ services:
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn app:app --timeout 120 --workers 2 --bind 0.0.0.0:$PORT"
+    startCommand: "gunicorn app:app --timeout 120 --workers 1 --bind 0.0.0.0:$PORT"
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.10.14
+      - key: DATABASE_URL
+        value: sqlite:////data/attendance.db
+      - key: RUN_SCHEDULER
+        value: "true"
+      # optional:
+      # - key: PUBLIC_BASE_URL
+      #   value: https://dfc-hangul-attendance.onrender.com
     disk:
       name: attendance-data
       mountPath: /data
